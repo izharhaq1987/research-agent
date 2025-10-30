@@ -43,3 +43,20 @@ Layout
 
 Notes
 • Uses OpenAI SDK by default; provider is swappable via env.
+
+---
+
+## 🖼️ Screenshots
+
+### Research-Agent Terminal Output
+
+Below is the actual summarization result for  
+`05_Home_Care_Assistant_TCP_Communication_Protocol_v3_9_2.pdf`.
+
+<p align="center">
+  <img src="images/Home_Care_Assistant.png" width="750" alt="Research-Agent terminal output showing summarization result">
+</p>
+
+> 📘 *Figure: The Research-Agent successfully processes and summarizes a technical PDF into structured Markdown and JSON reports.*
+
+---
