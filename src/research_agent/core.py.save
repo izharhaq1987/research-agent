@@ -1,0 +1,142 @@
+
+rom __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import List
+
+from dotenv import load_dotenv
+from pypdf import PdfReader
+from tiktoken import get_encoding
+from openai import OpenAI
+
+from .schema import Report
+
+
+def read_pdf_text(pdf_path: Path) -> List[str]
+{
+    reader = PdfReader(str(pdf_path))
+    pages = []
+    for i, page in enumerate(reader.pages)
+    {
+        text = page.extract_text() or ""
+        pages.append(text.strip())
+    }
+    return pages
+}
+
+def chunk_text(pages: List[str], target_tokens: int = 1400) -> List[str]
+{
+    enc = get_encoding("cl100k_base")
+    chunks = []
+    buffer = []
+    token_count = 0
+
+    for page in pages
+    {
+        page_tokens = len(enc.encode(page))
+        if token_count + page_tokens > target_tokens and buffer
+        {
+            chunks.append("\n\n".join(buffer))
+            buffer = []
+            token_count = 0
+        }
+        buffer.append(page)
+        token_count += page_tokens
+    }
+
+    if buffer
+    {
+        chunks.append("\n\n".join(buffer))
+    }
+    return chunks
+}
+
+def llm_report(chunks: List[str]) -> Report
+{
+    load_dotenv()
+    api_key = os.getenv("OPENAI_API_KEY")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    max_tokens = int(os.getenv("MAX_TOKENS", "3000"))
+    temperature = float(os.getenv("TEMPERATURE", "0.1"))
+
+    if not api_key
+    {
+        raise RuntimeError("OPENAI_API_KEY missing (see .env.example)")
+    }
+
+    client = OpenAI(api_key=api_key)
+
+    # Ask the model to synthesize across chunks and return a single JSON
+    system = Path("prompts/system.md").read_text(encoding="utf-8")
+    user = (
+        "Summarize the following PDF chunks. Return ONLY valid JSON per schema fields:\n"
+        "{doc_title, doc_meta, key_findings:{title,bullets[]}, methodology:{title,bullets[]}, "
+        "limitations:{title,bullets[]}, important_quotes:[{page?, text}], "
+        "entities[], topics[], pages_covered?}. "
+        "If information is unknown, use reasonable nulls/empties."
+    )
+
+    content_chunks = []
+    for idx, ch in enumerate(chunks, start=1)
+    {
+        content_chunks.append({"type": "text", "text": f"[Chunk {idx}]\n{ch}"})
+    }
+
+    resp = client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+            {"role": "user", "content": content_chunks},
+        ],
+        max_tokens=max_tokens,
+        response_format={"type": "json_object"},
+    )
+
+    raw = resp.choices[0].message.content
+    data = json.loads(raw)
+    return Report(**data)
+}
+
+def write_outputs(report: Report, out_dir: Path, base: str, write_md: bool = True) -> None
+{
+    out_dir.mkdir(parents=True, exist_ok=True)
+    json_path = out_dir / f"{base}.json"
+    json_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+    if write_md
+    {
+        md_path = out_dir / f"{base}.md"
+        md = []
+        md.append(f"# {report.doc_title}")
+        md.append("")
+        if report.doc_meta:
+            md.append("**Metadata**")
+            for k, v in report.doc_meta.items():
+                md.append(f"- **{k}**: {v}")
+            md.append("")
+        def sect(s):
+            md.append(f"## {s.title}")
+            for b in s.bullets:
+                md.append(f"- {b}")
+            md.append("")
+        sect(report.key_findings)
+        sect(report.methodology)
+        sect(report.limitations)
+        if report.important_quotes:
+            md.append("## Important quotes")
+            for q in report.important_quotes:
+                p = f"(p. {q.page}) " if q.page is not None else ""
+                md.append(f"> {p}{q.text}")
+            md.append("")
+        if report.entities:
+            md.append("**Entities:** " + ", ".join(report.entities))
+        if report.topics:
+            md.append("\n**Topics:** " + ", ".join(report.topics))
+        if report.pages_covered is not None:
+            md.append(f"\n**Pages covered:** {report.pages_covered}")
+        md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+}
